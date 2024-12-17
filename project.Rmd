@@ -1,0 +1,538 @@
+---
+title: "Baseball, Bootstraps, and Biceps"
+subtitle: "Analyzing the Impact of Offense, Defense, and Anabolic Steroids on MLB Win Rate"
+author: "Mason Pirner, Nikhil Saha, Vivek Vemulakonda"
+date: "`r Sys.Date()`"
+output:    
+      html_document:
+         toc: yes
+         toc_float: yes
+---
+
+```{r setup, include = FALSE}
+#load packages, read in your dataset if external to a package, 
+#and set global options. I have set all code chunks to not echo,
+#and to not print messages or warnings.  If you want to echo a particular code chunk to highlight something, you can do this individually for that code chunk.
+library(janitor)
+library(skimr)
+library(GGally)             
+library(tidyverse)        #umbrella package
+library(tidymodels)       #modeling
+library(plotly)           #3D scatterplots
+knitr::opts_chunk$set( echo = FALSE,    
+                       message = FALSE,
+                       warning = FALSE)
+mlb_teams <- read_csv(file = "mlb_teams.csv")
+```
+
+## Introduction
+
+*Disclaimer: This report is designed to be accessible to the average American reader with a basic familiarity of baseball jargon. While every effort has been made to present our research in a clear and accessible manner, readers unacquainted with general baseball terminology may find some concepts unfamiliar. A glossary of terms related to baseball and baseball statistics can be found on the MLB website [<https://www.mlb.com/glossary>]*
+
+Baseball is one of the most-watched sports in America, with an incredibly large market depending on the success of both the league and each individual team. Franchise employees invest significant time and money to ensure their team's success. Over the more than 100 years that baseball has been around, analysts have sought to identify the key factors that make a great baseball team. Is pitching more important than hitting? How important is fielding? How did anabolic steroids impact the sport? While there’s no definitive answer, baseball is a game of statistics, offering a rich dataset to explore these questions.
+
+In this project, we will analyze data from the history of Major League Baseball (MLB) to guide us toward insights about the optimal allocation of resources for a team. Specifically, we will model team win percentage (Win_percentage) as the response variable to better understand the factors contributing to team success.
+
+Our explanatory variables can be classified as offensive or defensive, based on what side of play the stats are generated from. Firstly, Weighted on-base average (wOBA) is a numerical variable and a popular metric to quantify a team's offensive ability- that is, it's a measure of how often the team's players are able to hit the ball and get onto a base, where a triple (batter runs to third base) is weighted higher than a single (batter gets to first base only). wOBA is calculated using the following equation: $$
+\frac{
+0.69 \times \text{walks} + 0.72 \times \text{batters hit by pitch} + 
+0.88 \times (\text{hits} - \text{doubles} - \text{triples} - \text{home runs}) +
+1.24 \times \text{doubles} + 1.56 \times \text{triples} + 2.08 \times \text{home runs}
+}{
+\text{at bats} + \text{walks} + \text{sacrifice flies} + \text{batters hit by pitch}
+}
+$$ The ability of a team to steal bases is another important offensive statistic that's not included in wOBA that we believe to be important to a team's chances of winning.
+
+The defensive capacity of a baseball team is mainly dependent on the ability of the team's pitcher to strike out batters. Fielding-Independent Pitching (FIP) is typically considered the gold standard to quantify the ability of a team's pitchers. It quantifies how often the pitcher lets runners get on base, so a lower FIP is better. FIP is calculated with the following equation: $$
+\frac{(\text{HR} \times 13) + (3 \times (\text{BB} + \text{HBP})) - (2 \times \text{K})}{\text{GP}} + C
+$$ where HR is home runs, BB is walks, HPB is hit-by-pitches, K is strikeouts, GP is games played, and C is a constant that varies year-by-year based mostly on the year's trends in ERA (Earned Run Average).
+
+We know, though, that a team's defensive capacity isn't entirely dependent on the pitcher, though- Good outfielders are also important to make sure that pop flies are caught, bases being stolen are called, etc. To encompass this, we chose to also consider WHIP, a defensive statistic that takes fielding into consideration. for similar reasons to FIP, a team would want to minimize WHIP as much as it can. It's calculated using the following equation: $$
+\text{WHIP} = \frac{\text{Walks} + \text{Hits}}{\text{Innings Pitched}}
+$$
+
+In a similar manner to stolen bases, saves is an important defensive stat that's not factored into FIP or WHIP. A save is awarded to a relief pitcher who finishes a game for the winning team under specific conditions. In essence, a save is awarded on a "close call" where the offensive team could have reasonably been able to mount a comeback in the final inning.
+
+Our final explanatory variable is a categorical one pertaining to one of the 'outlier' eras in modern baseball. From the late '90s to the early 2000s, widespread use of anabolic steroids is thought to have led to a dramatic increase in home runs and shattering of long-held baseball records. We will consider any season held between 1994 and 2004 to be part of the steroid era. Since the steroid era inevitably affected batting, pitching, and fielding statistics in general, this variable will be interacting with our other explanatory variables.
+
+The data used in this project are statistics collected about every team in Major League Baseball from 1876-2020. The dataset used in this analysis is available in "OpenIntro" from "Lahman's Baseball Database" [<https://www.openintro.org/data/index.php?data=mlb_teams>]. The yearly FIP constants came from the popular baseball statistics website 'Guts!'[<https://www.fangraphs.com/guts.aspx?type=cn>]. MLB data is publicly recorded on many sites that are easily accessible, such as Baseball Almanac [<https://www.baseball-almanac.com/yearmenu.shtml>].
+
+```{r mutations}
+
+# Create a data frame for yearly Fip constants
+cfip_data <- data.frame(
+  cFIP = c(3.166, 3.255, 3.112, 3.17, 3.191, 3.214, 3.16, 3.158, 3.147, 3.134, 
+           3.132, 3.048, 3.094, 3.025, 3.078, 3.097, 3.132, 3.24, 3.147, 3.02, 
+           3.049, 3.032, 2.962, 3.049, 3.134, 3.134, 3.139, 3.109, 3.172, 3.103, 
+           3.131, 2.988, 2.783, 2.856, 2.808, 2.763, 2.769, 2.871, 2.771, 2.684, 
+           2.768, 2.755, 2.717, 2.6, 2.752, 2.732, 2.585, 2.738, 2.633, 2.587, 
+           2.578, 2.565, 2.399, 2.451, 2.638, 2.509, 2.385, 2.539, 2.554, 2.517, 
+           2.605, 2.479, 2.617, 2.574, 2.527, 2.543, 2.475, 2.456, 2.369, 2.368, 
+           2.398, 2.591, 2.391, 2.479, 2.584, 2.511, 2.754, 2.669, 2.579, 2.69, 
+           2.674, 2.654, 2.471, 2.669, 2.878, 2.979, 3.049, 3.2, 3.314, 3.182, 
+           3.181, 2.9, 3.009, 3.136, 3.488, 3.229, 3.027, 2.989, 3.028, 3.333, 
+           3.148, 3.038, 3.15, 3.136, 2.803, 2.486, 2.229, 2.261, 2.315, 2.409, 
+           2.436, 2.556, 2.849, 2.768, 2.322, 2.215, 2.101, 2.178, 2.366, 2.522, 
+           2.418, 2.755, 2.665, 2.924, 2.827, 2.935, 2.766, 3.323, 3.425, 3.727, 
+           3.929, 3.374, 2.53, 2.679, 2.968, 3.08, 2.659, 3.277, 3.101, 2.881, 
+           3.269, 3.256, 2.764, 2.688, 2.533, 2.739, 2.536, 2.839, 2.233, 2.37, 
+           2.808, 2.932, 3.508, 3.58),
+  year = c(2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017, 2016, 2015, 
+           2014, 2013, 2012, 2011, 2010, 2009, 2008, 2007, 2006, 2005, 
+           2004, 2003, 2002, 2001, 2000, 1999, 1998, 1997, 1996, 1995, 
+           1994, 1993, 1992, 1991, 1990, 1989, 1988, 1987, 1986, 1985, 
+           1984, 1983, 1982, 1981, 1980, 1979, 1978, 1977, 1976, 1975, 
+           1974, 1973, 1972, 1971, 1970, 1969, 1968, 1967, 1966, 1965, 
+           1964, 1963, 1962, 1961, 1960, 1959, 1958, 1957, 1956, 1955, 
+           1954, 1953, 1952, 1951, 1950, 1949, 1948, 1947, 1946, 1945, 
+           1944, 1943, 1942, 1941, 1940, 1939, 1938, 1937, 1936, 1935, 
+           1934, 1933, 1932, 1931, 1930, 1929, 1928, 1927, 1926, 1925, 
+           1924, 1923, 1922, 1921, 1920, 1919, 1918, 1917, 1916, 1915, 
+           1914, 1913, 1912, 1911, 1910, 1909, 1908, 1907, 1906, 1905, 
+           1904, 1903, 1902, 1901, 1900, 1899, 1898, 1897, 1896, 1895, 
+           1894, 1893, 1892, 1891, 1890, 1889, 1888, 1887, 1886, 1885, 
+           1884, 1883, 1882, 1881, 1880, 1879, 1878, 1877, 1876, 1875, 
+           1874, 1873, 1872, 1871)
+)
+
+# Join the cFIP data with the existing dataset
+mlb_teams = mlb_teams %>%
+  left_join(cfip_data, by = "year")
+#Years before 1969 and after 2020 are missing some of the data values we need for deeper statistical analysis, so we'll filter for those years and mutate new variables for modern polular baseball statistics. 
+mlb_teams <- mlb_teams %>%
+  filter(year > 1969 & year != 2020) %>%
+  mutate(
+    steroid = ifelse(year >= 1994 & year <= 2004, "yes", "no"),
+    OBP = (hits + walks + batters_hit_by_pitch) / (at_bats + walks + batters_hit_by_pitch + sacrifice_flies),
+    SLG = ((hits - doubles - triples - homeruns) + (2 * doubles) + (3 * triples) + (4 * homeruns)) / at_bats,
+    OPS = OBP + SLG,
+    BA = hits / at_bats,
+    Win_percentage = wins / games_played,
+    K_BB_ratio = strikeouts_by_pitchers / walks_allowed,
+    WOBA = (0.69 * walks + 0.72 * batters_hit_by_pitch + 0.88 * (hits - doubles - triples - homeruns) +
+            1.24 * doubles + 1.56 * triples + 2.08 * homeruns) /
+           (at_bats + walks + sacrifice_flies + batters_hit_by_pitch),
+    WHIP = (walks_allowed + hits_allowed) / games_played,
+    FIP = ((13 * homeruns_allowed + 3 * (walks_allowed + batters_hit_by_pitch) - 2 * strikeouts_by_pitchers) / games_played) + cFIP
+  )
+
+
+```
+
+## Code Book
+
+| Variable Name           | Description                                                                                                                                                           |
+|:------------------------|:----------------------------------------------|
+| `Year`                  | The year of the recorded statistics. Numerical. Can only be integers.                                                                                                 |
+| `league_id`             | The league that the team is in. Categorical. Can be NL or AL.                                                                                                         |
+| `division_id`           | The division that the team is in. Categorical. Can be W, C, or E.                                                                                                     |
+| `rank`                  | Team's ranking in their division at the end of the regular season. Numerical. Can only be integers.                                                                   |
+| `games_played`          | Number of games played by the team that season. Numerical. Can only be integers.                                                                                      |
+| `home_games`            | Number of games played at home by the team that season. Numerical. Can only be integers.                                                                              |
+| `Wins`                  | Games won by the team in the regular season. Numerical. Can only be integers.                                                                                         |
+| `losses`                | Games lost by the team in the regular season. Numerical. Can only be integers.                                                                                        |
+| `division_winner`       | Did the team win their division? Categorical. Can be Y/N.                                                                                                             |
+| `wild_card_winner`      | Did the team clinch a wild card spot? Categorical. Can be Y/N.                                                                                                        |
+| `league_winner`         | Did the team win their league? Categorical. Can be Y/N.                                                                                                               |
+| `world_series_winner`   | Did the team win the world series? Categorical. Can be Y/N.                                                                                                           |
+| `runs_scored`           | Runs scored by the team during the season. Numerical. Can only be integers.                                                                                           |
+| `at_bats`               | At bats by the team during the season. Numerical. Can only be integers.                                                                                               |
+| `hits`                  | Hits by the team during the season. Numerical. Can only be integers.                                                                                                  |
+| `doubles.`              | Doubles by the team during the season. Numerical. Can only be integers.                                                                                               |
+| `triples`               | Triples by the team during the season. Numerical. Can only be integers.                                                                                               |
+| `homeruns`              | Home Runs by the team during the season. Numerical. Can only be integers.                                                                                             |
+| `walks`                 | Walks drawn by the team during the season. Numerical. Can only be integers.                                                                                           |
+| `strikeouts_by_batters` | Number of batters who struck out on the team during the season. Numerical. Can only be integers.                                                                      |
+| `stolen_bases`          | Number of stolen bases by the team during the season. Numerical. Can only be integers.                                                                                |
+| `caught_stealing`       | Number of players caught stealing on the team during the season. Numerical. Can only be integers.                                                                     |
+| `batters_hit_by_pitch`  | Number of batters hit by a pitch on the team during the season. Numerical. Can only be integers.                                                                      |
+| `sacrifice_flies`       | Number of sacrifice flies by the team during the season. Numerical. Can only be integers.                                                                             |
+| `opponents_runs_scored` | Runs scored by opponents during the season. Numerical. Can only be integers.                                                                                          |
+| `earned_runs_allowed`   | Earned runs allowed by the team during the season. Numerical. Can only be integers.                                                                                   |
+| `earned_run_average`    | Average number of runs allowed by the team per game during the season. Numerical. Values to two decimal places.                                                       |
+| `complete_games`        | Complete games pitched by the team during the season. Numerical. Can only be integers.                                                                                |
+| `shutouts`              | Shutouts pitched by the team during the season. Numerical. Can only be integers.                                                                                      |
+| `saves`                 | Saves pitched by the team during the season. Numerical. Can only be integers.                                                                                         |
+| `outs_pitched`          | Number of outs pitched by the team during the season. Numerical. Can only be integers.                                                                                |
+| `hits_allowed`          | Number of hits allowed by the team during the season. Numerical. Can only be integers.                                                                                |
+| `homeruns_allowed`      | Number of home runs allowed by the team during the season. Numerical. Can only be integers.                                                                           |
+| `walks_allowed`         | Number of walks allowed by the team during the season. Numerical. Can only be integers.                                                                               |
+| `strikouts_by_pitchers` | Number of strikouts pitched by the team during the season. Numerical. Can only be integers.                                                                           |
+| `errors`                | Number of errors committed by the team during the season. Numerical. Can only be integers.                                                                            |
+| `double_plays`          | Number of double plays turned by the team during the season. Numerical. Can only be integers.                                                                         |
+| `fielding_percentage`   | Percentage of playable balls fielded by the team during the season. Numerical. Values to three decimal places.                                                        |
+| `team_name`             | The name of the team. Can be any team in MLB from 1876-2020.                                                                                                          |
+| `ball_park`             | The name of the team's home ballpark. Can be any MLB home stadium from 1876-2020.                                                                                     |
+| `home_attendance`       | Total number of fans in attendance at home games during the season. Numerical. Can only be integers.                                                                  |
+| `win_percentage`        | The proportion of games the team won that season. Numerical. Values from 0-1 to two decimal places.                                                                   |
+| `wOBA`                  | The rate of at bats players reached base on the team, weighted by how they reached base according to MLB wOBA standards. Numerical. Values to seven decimal places.   |
+| `WHIP`                  | Walks and hits allowed per inning pitched by the team. Numerical. Values to six decimal places.                                                                       |
+| `FIP`                   | The value of the teams pitching per game ignoring the quality of fielders' defense, weighted according to MLB FIP standards. Numerical. Values to six decimal places. |
+| `steroid`               | If the team was playing in the steroid era. Categorical. Yes/No                                                                                                       |
+
+## Model building
+In this section, we will propose and evaluate three linear models, each focusing on different combinations of offensive and defensive statistics to predict yearly team win rate. To ensure the reliability of our modeling process, we start by dividing the dataset into a 50% training and 50% testing set. Splitting allows us to make models on one subset of the data while evaluating their performance on another set to avoid overfitting. 
+
+### Model proposed by Vivek Vemulakonda
+
+```{r setseed}
+set.seed(420)   
+
+mlb_split <- initial_split(mlb_teams, prop = 0.5) 
+
+mlb_train <- training(mlb_split) 
+mlb_test <- testing(mlb_split)
+```
+
+I chose to compare `wOBA`(Weighted on base average), `stolen_bases`, and `steroid` to `Win_percentage`, I felt as if this was fitting because `wOBA` is inherently an offensive statistic along with stolen bases (wOBA does not account for stolen bases.) I chose `steroid` as I wanted to see how it would change the statistics.
+
+```{r plotsV}
+
+
+mlb_train %>% 
+             select( stolen_bases, WOBA, Win_percentage) %>% 
+              ggpairs(title ="Scatterplot Matrix of Stats vs. Win Rate")
+
+
+ggplot(mlb_train, aes(x = WOBA, y = steroid)) +
+  geom_boxplot() +
+  labs(title = "Steroids Impact on WOBA", x = "WOBA", y = "Steroid Use")
+```
+
+I chose to use a scatter plot matrix to visualize my numerical variables, as it seemed to be the most concise and streamlined, while also displaying the information I needed. I chose a box plot to compare `steroid` to `wOBA` to show that there is a difference in hitting overall when it came to the Steroid Era vs. other time periods.
+
+We see the correlation between `Win_percentage` and `stolen_bases` to be 0.145 indicating that there is a weak, positive relationship, but when comparing `wOBA` to `Win_percentage` it can be seen that there is a moderate, positive relationship with it being 0.520. The weird thing that I found the most interesting is that the two numerical explanatory variables have a negative correlation, although it is very weak.
+
+```{r V1}
+
+model1 <- lm(Win_percentage ~ steroid * WOBA + steroid * stolen_bases, data = mlb_train)
+tidy(model1)%>%select (term, estimate)
+
+model1.rsq <- glance(model1) %>% 
+                    select(adj.r.squared) %>% pull()
+
+model1_pred <- augment(model1, newdata  = mlb_test )
+model1.rmse <- model1_pred %>% 
+                 rmse(truth = Win_percentage, estimate = .fitted) %>% pull()
+```
+
+| Model    | Adjusted $R^2$                   |
+|:---------|----------------------------------|
+| `model1` | `r round(100 * model1.rsq, 2)` % |
+
+| Model     | RMSE                      |
+|:----------|---------------------------|
+| `model1a` | `r round(model1.rmse, 4)` |
+
+Using the models information we can determine that the fitted equations are as follows:
+
+If steroids: $$
+\text{Win Rate} = -0.4881 + 2.8837 \cdot (\text{WOBA}) + 0.0002966 \cdot (\text{stolen bases})
+$$ Intercept: Teams playing during the Steroid Era are expected to have a Win Rate of -0.4881 (which is not realistic as Win Rates can't be negative, suggesting this intercept is outside the range of observed data) when both wOBA (weighted on-base average) and stolen bases are 0. For every 1-unit increase in wOBA, the Win Rate is expected to increase by 2.8837 (or 288.37%), holding stolen bases constant. For every additional stolen base, the Win Rate is expected to increase by 0.0002966 (or 0.03%), holding wOBA constant. Non steroid era: $$
+\text{Win Rate} = -0.2995 + 2.4386 \cdot (\text{WOBA}) + 0.0002858 \cdot (\text{stolen bases})
+$$ Slope (wOBA): For every 1-unit increase in wOBA, the Win Rate is expected to increase by 2.4386 (or 243.86%), holding stolen bases constant. Slope (Stolen Bases): For every additional stolen base, the Win Rate is expected to increase by 0.0002858 (or 0.03%), holding wOBA constant.
+
+A value of `r round(100 * model1.rsq, 2)` % is relatively low in terms of explanatory power. This suggests that there may be other important factors not included in the model that contribute to the variability in the response variable.
+
+An RMSE of `r round(model1.rmse, 4)` suggests that, on average, the model is off by about `r round(100* model1.rmse, 4)` % from the true values.
+
+To ensure the validity of my model, I bootstrapped the data to calculate a 95% confidence interval for my estimated parameters.
+
+```{r V2}
+
+boot_WOBA <- mlb_train %>%
+  specify(response = Win_percentage, explanatory = WOBA) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "slope")
+
+boot_steroid <- mlb_train %>%
+  specify(response = Win_percentage, explanatory = steroid) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "diff in means", order = c("yes", "no"))
+
+boot_stolen_bases <- mlb_train %>%
+  specify(response = Win_percentage, explanatory = stolen_bases) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "slope")
+
+ci_WOBA <- boot_WOBA %>%
+  summarize(lower = quantile(stat, 0.025),
+            upper = quantile(stat, 0.975))
+ci_steroid <- boot_steroid %>%
+  summarize(lower = quantile(stat, 0.025),
+            upper = quantile(stat, 0.975))
+ci_stolen_bases <- boot_stolen_bases %>%
+  summarize(lower = quantile(stat, 0.025),
+            upper = quantile(stat, 0.975))
+
+ggplot(data = boot_WOBA, mapping = aes(x=stat))+ geom_histogram(bins = 13) + geom_vline(aes(xintercept = ci_WOBA$lower), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = ci_WOBA$upper), color = "red", linetype = "dashed") +
+  labs(title = 'Bootstrap Distribution of Slope for WOBA Predicting Win Rate')
+  
+
+ggplot(data = boot_stolen_bases, mapping = aes(x=stat))+ geom_histogram(bins = 13) +geom_vline(aes(xintercept = ci_stolen_bases$lower), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = ci_stolen_bases$upper), color = "red", linetype = "dashed") +
+  labs(title = 'Bootstrap Distribution of Slope for Stolen Bases Predicting Win Rate') 
+   
+ggplot(data = boot_steroid, mapping = aes(x=stat))+ geom_histogram(bins = 13) +geom_vline(aes(xintercept = ci_steroid$lower), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = ci_steroid$upper), color = "red", linetype = "dashed") +
+  labs(title = 'Bootstrap Distribution for Steroid Era Predicting Win Rate') 
+
+```
+
+The 95% confidence interval for wOBA and stolen bases do not include zero, so there's statistical evidence for a relationship between these two variables and Win Rate. Contrarily, zero exists within the steroid's confidence interval, meaning our statistical analysis does not provide evidence for its impact on our response variable. This makes sense- the Win Rate of all teams in a given year intrinsically averages to 50% regardless of the year.
+
+### Model proposed by Nikhil Saha
+
+To analyze the weight of the facet of baseball opposing Vivek's, I decided to compare `FIP` (fielding-independent pitching), saves (to factor in clutch pitching), and the presence of the steroid era to win percentage. `FIP` is a stat that measures the ability of pitchers to limit runs scored against them while accounting for how poor fielding, stadium elevation, and wall distance impacts their simpler stats like `ERA` (earned run average). This will allow us to compare and contrast between the weight of offensive vs defensive stats on how much a team is winning, while accounting for other factors like baserunning. The steroid era saw a large increase in hitting statistics, so I wanted to see how a more difficult environment for pitchers would impact their value to the team.
+
+```{r N1}
+mlb_train %>% 
+             select(saves, FIP, Win_percentage) %>% 
+              ggpairs(title ="Scatterplot Matrix of Stats vs. Win Rate")
+
+mlb_train %>%
+  group_by(year) %>%                      
+  summarise(avg_FIP = mean(FIP, na.rm = TRUE)) %>%  
+  ggplot(aes(x = year, y = avg_FIP)) +     
+  geom_point(color = "blue") + 
+  geom_smooth(color = "cyan")+
+  labs(title = "Yearly Average of FIP", x = "Year", y = "Average FIP")
+```
+
+I wanted to analyze the relationships between variables, so I chose a scatter plot matrix. From this we see that `FIP` has a negative correlation with `Win_percentage`, which is expected due to `FIP` being a metric that measures performances against the pitchers that own the stat. `saves` has a positive correlation with `Win_percentage`, which again makes sense because a save wins a game. I also wanted to illustrate the progression of the average `FIP` over the years, making note of the stretch from 1994-2004 that will be our steroid era categorical variable. I used a scatterplot to show this with mean `FIP` as the response variable. Unsurprisingly, we see an increase in FIP during the steroid era as `FIP` is a modified `ERA` (which means the lower the better).
+
+```{r N2}
+
+modelN <- lm(Win_percentage ~ steroid * FIP + steroid * saves, data = mlb_train)
+tidy(modelN)%>% select(term,estimate)
+modelN.rsq <- glance(modelN) %>% 
+                    select(adj.r.squared) %>% pull()
+modelN_pred <- augment(modelN, newdata  = mlb_test )
+modelN.rmse <- modelN_pred %>% 
+                 rmse(truth = Win_percentage, estimate = .fitted) %>% pull()
+```
+
+| Model    | Adjusted $R^2$                   |
+|:---------|----------------------------------|
+| `modelN` | `r round(100 * modelN.rsq, 2)` % |
+
+| Model     | RMSE                      |
+|:----------|---------------------------|
+| `modelN1` | `r round(modelN.rmse, 4)` |
+
+The model gives us equations during the steroid era as well as in other years.
+
+Steroid Era: $$
+\text{Win Rate} = 0.4755 - 0.0082 \cdot \text{FIP} + 0.0030 \cdot \text{saves}
+$$ Intercept: Teams playing during the Steroid Era are expected to have a Win Rate of 0.4755 (47.55%) when both FIP (Fielding Independent Pitching) and saves are 0. Of course, saves and FIP cannot simultaneously be zero so this value is outside of our data range. Slope (FIP): For every 1-unit increase in FIP, the Win Rate is expected to decrease by 0.0082, holding saves constant. Slope (Saves): For every additional save, the Win Rate is expected to increase by 0.0030, holding FIP constant. Non Steroid Era: $$
+\text{Win\_rate} = 0.5008 - 0.0082 \cdot \text{FIP} + 0.0026 \cdot \text{saves}
+$$
+
+An $R^2$ of `r round(100 * modelN.rsq, 2)` % suggests that this model is relatively weak for explaining the Win Rate of team. It is possible though, with so many things impacting how much a team wins, that `r round(100 * modelN.rsq, 2)` % holds a significant bearing compared to other aspects of baseball.
+
+The `r round(modelN.rmse, 4)` RMSE value means that there is a `r round(100* modelN.rmse, 4)` fault of this model compared to true values on average.
+
+I used bootstrapping to resample the data and determine a 95% confidence interval for the reliability of my model's parameter estimates.
+```{r N3}
+
+bootstrap_FIP <- mlb_train %>%
+  specify(response = Win_percentage, explanatory = FIP) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "slope")
+
+bootstrap_steroid <- mlb_train %>%
+  specify(response = Win_percentage, explanatory = steroid) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "diff in means", order = c("yes", "no"))
+
+bootstrap_saves <- mlb_train %>%
+  specify(response = Win_percentage, explanatory = saves) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "slope")
+
+ci_FIP <- bootstrap_FIP %>%
+  summarize(lower = quantile(stat, 0.025),
+            upper = quantile(stat, 0.975))
+ci_steroid <- bootstrap_steroid %>%
+  summarize(lower = quantile(stat, 0.025),
+            upper = quantile(stat, 0.975))
+ci_saves <- bootstrap_saves %>%
+  summarize(lower = quantile(stat, 0.025),
+            upper = quantile(stat, 0.975))
+
+ggplot(data = bootstrap_FIP, mapping = aes(x=stat))+ geom_histogram(bins = 13) + geom_vline(aes(xintercept = ci_FIP$lower), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = ci_FIP$upper), color = "red", linetype = "dashed") +
+  labs(title = 'Bootstrap Distribution of Slope for FIP Predicting Win Rate')
+  
+
+ggplot(data = bootstrap_saves, mapping = aes(x=stat))+ geom_histogram(bins = 13) +geom_vline(aes(xintercept = ci_saves$lower), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = ci_saves$upper), color = "red", linetype = "dashed") +
+  labs(title = 'Bootstrap Distribution of Slope for Saves Predicting Win Rate') 
+   
+ggplot(data = bootstrap_steroid, mapping = aes(x=stat))+ geom_histogram(bins = 13) +geom_vline(aes(xintercept = ci_steroid$lower), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = ci_steroid$upper), color = "red", linetype = "dashed") +
+  labs(title = 'Bootstrap Distribution for Steroid Era Predicting Win Rate') 
+  
+
+```
+
+In both saves and FIP, zero is not in our 95% confidence interval, meaning there's statistical evidence for both of these variables having a relationship with Win Rate. In contrast, since zero appears in our 95% bootstrap confidence, the observed difference in Win Rate between steroid era and non-steroid era teams could be due to random chance. This is in line with our understanding of the definition of Win Rate, where the Win Rate of a given year inevitably comes to around 50% as ties are very rare.
+
+### Model proposed by Mason Pirner
+
+To further understand the relationship between defensive pitching and team success, I thought to incorporate Walks and Hits per Innings Pitched (`WHIP`) as a key variable in my model. While `FIP` attempts to isolate the pitching performance from external factors like fielding and ballpark effects, `WHIP` provides us with a complimentary perspective by accounting for poor fielding and defensive miscues. by using WHIP we can more broadly evaluate a team's defensive effectiveness. I concur with Nikhil's rationale for considering saves and steroid era effects into our defensive statistical analysis, so I'll incorporate them into my model as well.
+
+```{r M1}
+#visualize relationships in a Scatterplot Matrix using ggpairs
+mlb_train %>% 
+             select(saves, WHIP, Win_percentage) %>% 
+              ggpairs(title ="Scatterplot Matrix of Defensive Statistics and Win Rate")
+#create a scatterplot to visualize WHIP over the years
+mlb_train %>%
+  group_by(year) %>%                      
+  summarise(avg_WHIP = mean(WHIP, na.rm = TRUE)) %>%  
+  ggplot(aes(x = year, y = avg_WHIP)) +     
+  geom_point(color = "purple") + 
+  geom_smooth(color = "gold")+
+  geom_vline(xintercept = c(1994, 2004), linetype = "dashed", color = "black") + 
+  labs(title = "Yearly Trends in WHIP", x = "Year", y = "Average WHIP")
+```
+
+When visualized in a scatter plot matrix, we can already make some qualitative and quantitative observations about our data trends. First of all, we can see that our data values have relatively Gaussian distributions. We can see a moderate negative correlation between `WHIP` and win percentage (CC = -0.531), which is what we should expect based on the nature of how `WHIP` is calculated. We can also see a slightly weaker positive correlation between saves and win percentage (CC = 0.446), which also aligns with our intuition. When we plot yearly tends in `WHIP` we can see a very conspicuous increase in `WHIP` during the steroid era, which are years between the black dashed lines. This aligns with our intuition as batters tended to hit more pitches and hit them further, leading to worse defensive statistics of the opposing team. Nice!
+
+With two numerical predictors, we can use a 3D scatterplot to visualize the distribution of our data and color code based on if the datapoint was from the steroid era or not. 
+```{r M_3D}
+#Since i have two numerical predictors, We can get spicy and try out a 3D scatterplot. 
+#the library was easy enough to learn the syntax of, so though we didn't learn it in class i thought it was nice
+
+plot_ly(data = mlb_train,
+        x = ~WHIP, 
+        y = ~saves,
+        z = ~Win_percentage,
+        color = ~steroid,
+        type = 'scatter3d',
+        mode = 'markers')
+        
+
+```
+In the 3D scatterplot we can see a decrease in WHIP values in the steroid era, as well as the trends we've already seen in our scatterplot matrix. 
+```{r M2}
+# create the model and generate key statistical values
+modelM <- lm(Win_percentage ~ steroid * WHIP + steroid * saves, data = mlb_train)
+tidy(modelM)%>% select(term,estimate)
+modelM.rsq <- glance(modelM) %>% 
+                    select(adj.r.squared) %>% pull()
+modelM_pred <- augment(modelM, newdata  = mlb_test )
+modelM.rmse <- modelM_pred %>% 
+                 rmse(truth = Win_percentage, estimate = .fitted) %>% pull()
+```
+
+| Model    | $R^2_{adj}$                      |
+|:---------|----------------------------------|
+| `modelM` | `r round(100 * modelM.rsq, 2)` % |
+
+| Model    | RMSE                      |
+|:---------|---------------------------|
+| `modelM` | `r round(modelM.rmse, 4)` |
+
+*Seasons held in the Steroid Era*: $$
+\text{Win Rate} = 0.8011 - 0.0356 \cdot (\text{WHIP}) + 0.0037 \cdot (\text{saves})
+$$
+
+Intercept: Teams playing during the Steroid Era are expected to have a Win Rate of 0.8011 (or 80.11%) if their `WHIP` (walks plus hits per inning pitched) and saves are both 0. This scenario is impossible, so it's outside of the range of our data. Slope (`WHIP`): For every 1-unit increase in `WHIP`, the Win Rate is expected to decrease by 0.0356 (or 3.56%)if we were to hold saves constant. Slope (`saves`): For every additional save, the Win Rate is expected to increase by 0.0037 (or 0.37%), holding WHIP constant.
+
+*Seasons held outside of the Steroid Era*: $$
+\text{Win Rate} = 0.9718 - 0.0468 \cdot (\text{WHIP}) + 0.0023 \cdot (\text{saves})
+$$ Slope (WHIP): For every 1-unit increase in WHIP, the Win Rate is expected to decrease by 0.0468 (or 4.68%), holding saves constant. Slope (Saves): For every save, the Win Rate is expected to increase by 0.0023 (or 0.23%), holding WHIP constant.
+
+An $R^2$ of `r round(modelM.rsq, 3)` suggests a relatively weak correlation between our explanatory variables and Win Rate. It suggests that only `r round(100 * modelM.rsq, 2)` % of the variation in Win Rate is explained by our model. While `r round(100 * modelM.rsq, 2)` % isn't much, it provides that our predictors have a statistically meaningful relationship with Win Rate.
+
+The model also demonstrates a relatively low RMSE value of `r round(modelM.rmse, 4)`, indicating that the predicted values are close to the actual observations on average. this low RMSE value suggests that the model has pretty good predictive accuracy within the range of data used.
+
+Let's bootstrap the data to see how confident we can be with these asserted model parameters.
+
+```{r M3}
+
+bootstrap_WHIP <- mlb_train %>%
+  specify(response = Win_percentage, explanatory = WHIP) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "slope")
+
+bootstrap_steroid <- mlb_train %>%
+  specify(response = Win_percentage, explanatory = steroid) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "diff in means", order = c("yes", "no"))
+
+bootstrap_saves <- mlb_train %>%
+  specify(response = Win_percentage, explanatory = saves) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "slope")
+
+
+ci_WHIP <- bootstrap_WHIP %>%
+  summarize(lower = quantile(stat, 0.025),
+            upper = quantile(stat, 0.975))
+ci_steroid <- bootstrap_steroid %>%
+  summarize(lower = quantile(stat, 0.025),
+            upper = quantile(stat, 0.975))
+ci_saves <- bootstrap_saves %>%
+  summarize(lower = quantile(stat, 0.025),
+            upper = quantile(stat, 0.975))
+
+ggplot(data = bootstrap_WHIP, mapping = aes(x=stat))+ geom_histogram(bins = 13) + geom_vline(aes(xintercept = ci_WHIP$lower), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = ci_WHIP$upper), color = "red", linetype = "dashed") +
+  labs(title = 'Bootstrap Distribution of Slope for WHIP Predicting Win Rate')
+  
+
+ggplot(data = bootstrap_saves, mapping = aes(x=stat))+ geom_histogram(bins = 13) +geom_vline(aes(xintercept = ci_saves$lower), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = ci_saves$upper), color = "red", linetype = "dashed") +
+  labs(title = 'Bootstrap Distribution of Slope for Saves Predicting Win Rate') 
+   
+ggplot(data = bootstrap_steroid, mapping = aes(x=stat))+ geom_histogram(bins = 13) +geom_vline(aes(xintercept = ci_steroid$lower), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = ci_steroid$upper), color = "red", linetype = "dashed") +
+  labs(title = 'Bootstrap Distribution for Steroid Era Predicting Win Rate') 
+
+```
+
+The histograms above show that for both saves and FIP, zero is outside the 95% confidence intervals (red dashed lines), providing statistical evidence that these variables are related to Win Rate. In contrast, the 95% bootstrap confidence interval for the difference in Win Rate between steroid-era and non-steroid-era teams includes zero, which suggests that the observed difference may be due to random chance. For reasons aforementioned by Vivek and Nikhil, this observation is not surprising.
+
+### Battle of the Models
+
+| Group Member | Explanatory Variables           | $R^2_{adj}$              | RMSE                      |
+|:----------------|:--------------------|:----------------|:----------------|
+| Vivek        | wOBA, Stolen Bases, Steroid Era | `r round(model1.rsq, 3)` | `r round(model1.rmse, 4)` |
+| Nikhil       | FIP, Saves, Steroid Era         | `r round(modelN.rsq, 3)` | `r round(modelN.rmse, 4)` |
+| Mason        | WHIP, Saves, Steroid Era        | `r round(modelM.rsq, 3)` | `r round(modelM.rmse, 4)` |
+
+## Results
+
+Our chosen best model based on our previous analysis considers how `saves` and `WHIP` affect `Win_percentage` both in and outside the `steroid` era. This model was the best of the three for multiple reasons. It coherently describes how a team performs based on their ability to keep runners off the bases (`WHIP`) and strand runners during late innings if there are any(`saves`). It also considers times that are especially difficult for pitchers to perform well due to increased power hitting `steroids`. In short, our data analysis suggests that the relationship between defensive power has a more signficant influence on a team's win rate than offensive power. This relationship weakens, however, during the era of the MLB where anabolic steroid use was widespread. This observation coencides with an increase in the magnitude of the relationship between win rate and offensive statistics during the same era.
+
+```{r best_model_fit}
+modelBest <- lm(Win_percentage ~ steroid * WHIP + steroid * saves, data = mlb_teams)
+tidy(modelBest )%>% select(term,estimate)
+```
+
+Our equations for this model with the entire data set are as follows:
+
+Steroid Era: $$
+\text{Win Rate}_{\text{steroid}} = 0.8477 + 0.0117 \cdot \text{WHIP} + 0.0012 \cdot \text{saves}
+$$ Non Steroid Era: $$
+\text{Win Rate}_{\text{non-steroid}} = 1.0129 - 0.0502 \cdot \text{WHIP} + 0.0024 \cdot \text{saves}
+$$
+
+Logically, for both of these equations we see that there is an inverse correlation between `WHIP` and the response variable, `Win_percentage`. This makes sense because WHIP is a stat that is lower for pitchers who are better at limiting baserunners. We expect less baserunners against to mean less runs against, which means a greater chance of winning. Since this model has the lowest $R^2$ and RMSE values as well as the steepest slope, we would be inclined to tell baseball team owners and managers to spend their money on pitchers with low WHIP and good closers if they want to maximize their chances of winning.
+
+## Bibliography
+
+Baseball Almanac, Inc. “MLB History Year-by-Year (1876-2024).” *Baseball Almanac*, www.baseball-almanac.com/yearmenu.shtml. Accessed 7 Dec. 2024.
+
+“Glossary.” *MLB.Com*, www.mlb.com/glossary. Accessed 7 Dec. 2024.
+
+“Guts!: Fangraphs Baseball.” *Guts! \| FanGraphs Baseball*, www.fangraphs.com/guts.aspx?type=cn. Accessed 7 Dec. 2024.
+
+“Major League Baseball Teams Data.” *Data Sets*, www.openintro.org/data/index.php?data=mlb_teams. Accessed 7 Dec. 2024.
+
+
+
